@@ -3,4 +3,7 @@ google-generativeai
 pandas
 python-dotenv
 gspread
+
 oauth2client
+streamlit-camera-input-live
+opencv-python-headless
