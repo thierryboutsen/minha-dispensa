@@ -9,12 +9,21 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
 # --- 1. CONFIGURAÇÕES INICIAIS ---
-load_dotenv() # Carrega a senha do arquivo .env
+# --- 1. CONFIGURAÇÕES INICIAIS ---
+load_dotenv() # Tenta carregar do .env (Se estiver no PC)
+
+# Tenta pegar a chave do ambiente (PC)
 api_key = os.getenv("GOOGLE_API_KEY")
 
-# Verifica se a chave do Gemini existe
+# Se não achou no ambiente, tenta pegar dos Segredos do Streamlit (Nuvem)
 if not api_key:
-    st.error("ERRO CRÍTICO: Chave de API não encontrada. Verifique o arquivo .env")
+    # Verifica se existe no st.secrets
+    if "GOOGLE_API_KEY" in st.secrets:
+        api_key = st.secrets["GOOGLE_API_KEY"]
+
+# Se mesmo assim não achou, aí sim dá erro
+if not api_key:
+    st.error("ERRO CRÍTICO: Chave de API não encontrada. Configure os Secrets no Streamlit Cloud.")
     st.stop()
 
 genai.configure(api_key=api_key)
@@ -156,4 +165,5 @@ if st.session_state['dados_tabela'] is not None:
                 # st.rerun() # Opcional: Recarrega a página para limpar tudo
                 
             except Exception as e:
+
                 st.error(f"Erro ao gravar na planilha: {e}")
