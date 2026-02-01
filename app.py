@@ -10,20 +10,18 @@ from datetime import datetime
 
 # --- 1. CONFIGURAÇÕES INICIAIS ---
 # --- 1. CONFIGURAÇÕES INICIAIS ---
-load_dotenv() # Tenta carregar do .env (Se estiver no PC)
+# --- 1. CONFIGURAÇÕES INICIAIS ---
+load_dotenv() # Tenta carregar localmente
 
-# Tenta pegar a chave do ambiente (PC)
+# 1º tenta pegar do sistema (PC)
 api_key = os.getenv("GOOGLE_API_KEY")
 
-# Se não achou no ambiente, tenta pegar dos Segredos do Streamlit (Nuvem)
-if not api_key:
-    # Verifica se existe no st.secrets
-    if "GOOGLE_API_KEY" in st.secrets:
-        api_key = st.secrets["GOOGLE_API_KEY"]
+# 2º Se estiver vazio, tenta pegar dos Secrets (Nuvem)
+if not api_key and "GOOGLE_API_KEY" in st.secrets:
+    api_key = st.secrets["GOOGLE_API_KEY"]
 
-# Se mesmo assim não achou, aí sim dá erro
 if not api_key:
-    st.error("ERRO CRÍTICO: Chave de API não encontrada. Configure os Secrets no Streamlit Cloud.")
+    st.error("Chave API não encontrada. Verifique os Secrets no painel do Streamlit.")
     st.stop()
 
 genai.configure(api_key=api_key)
@@ -167,3 +165,4 @@ if st.session_state['dados_tabela'] is not None:
             except Exception as e:
 
                 st.error(f"Erro ao gravar na planilha: {e}")
+
