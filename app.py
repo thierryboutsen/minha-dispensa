@@ -7,24 +7,17 @@ import json
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
-import cv2
-import numpy as np
-from streamlit_camera_input_live import camera_input_live
 
-# --- 1. CONFIGURAÇÕES E CHAVES ---
+# --- 1. CONFIGURAÇÕES ---
 load_dotenv()
-api_key = os.getenv("GOOGLE_API_KEY")
-
-if not api_key and "GOOGLE_API_KEY" in st.secrets:
-    api_key = st.secrets["GOOGLE_API_KEY"]
+api_key = os.getenv("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
 
 if not api_key:
-    st.error("ERRO: Chave API não configurada.")
+    st.error("Chave API não configurada.")
     st.stop()
 
 genai.configure(api_key=api_key)
-
-st.set_page_config(page_title="Dispensa Pro", page_icon="🛒", layout="centered")
+st.set_page_config(page_title="Dispensa Pro", page_icon="🛒")
 
 # --- 2. CONEXÃO GOOGLE SHEETS ---
 def conectar_gsheets():
@@ -32,88 +25,67 @@ def conectar_gsheets():
     try:
         if "gcp_service_account" in st.secrets:
             creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
-        else:
-            creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-        
-        client = gspread.authorize(creds)
-        return client.open("Estoque Dispensa").sheet1
+            return gspread.authorize(creds).open("Estoque Dispensa").sheet1
+        return None
     except Exception as e:
-        st.error(f"Erro de conexão: {e}")
+        st.error(f"Erro na planilha: {e}")
         return None
 
-# --- 3. LOGICA DA IA ---
-def processar_ia(image_file):
+# --- 3. LÓGICA DA IA ---
+def processar_cupom(image_buffer):
     model = genai.GenerativeModel('gemini-1.5-flash')
-    prompt = f"""
-    Analise o cupom fiscal. Extraia itens: produto, quantidade, categoria, preco.
-    Data hoje: {datetime.now().strftime('%d/%m/%Y')}
-    Retorne JSON PURO (lista):
-    [{{"produto": "Exemplo", "quantidade": 1, "categoria": "Alimentação", "preco": 5.50, "data": "DD/MM/AAAA"}}]
-    """
-    image_parts = [{"mime_type": image_file.type, "data": image_file.getvalue()}]
+    prompt = """Analise o cupom fiscal e extraia: produto, quantidade, categoria, preco. 
+    Retorne apenas JSON PURO: [{"produto": "X", "quantidade": 1, "categoria": "Alimentação", "preco": 5.50}]"""
+    
+    image_parts = [{"mime_type": "image/jpeg", "data": image_buffer.getvalue()}]
     response = model.generate_content([prompt, image_parts[0]])
     return response.text
 
-# --- 4. LOGICA QR CODE ---
-def ler_qr_code(image_buffer):
-    if image_buffer:
-        bytes_data = image_buffer.getvalue()
-        cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-        detector = cv2.QRCodeDetector()
-        url, _, _ = detector.detectAndDecode(cv2_img)
-        return url
-    return None
+# --- 4. INTERFACE ---
+st.title("🛒 Minha Dispensa Pro")
 
-# --- 5. INTERFACE ---
-st.title("🛒 Controle de Dispensa Inteligente")
+if 'dados' not in st.session_state:
+    st.session_state['dados'] = None
 
-if 'dados_tabela' not in st.session_state:
-    st.session_state['dados_tabela'] = None
+# Opções de entrada simples
+metodo = st.radio("Como deseja adicionar?", ["Foto do Cupom", "Câmera ao Vivo"])
 
-tab1, tab2 = st.tabs(["📸 Foto (IA)", "🔍 QR Code (SEFAZ)"])
+foto_para_processar = None
 
-with tab1:
-    arq = st.file_uploader("Subir foto do cupom", type=['jpg', 'png', 'jpeg'])
-    if arq and st.button("✨ Analisar com IA"):
-        res = processar_ia(arq)
+if metodo == "Foto do Cupom":
+    foto_para_processar = st.file_uploader("Escolha a foto", type=['jpg', 'png', 'jpeg'])
+else:
+    foto_para_processar = st.camera_input("Tire a foto do cupom")
+
+if foto_para_processar and st.button("✨ Ler Cupom"):
+    try:
+        res = processar_cupom(foto_para_processar)
         clean = res.replace("```json", "").replace("```", "").strip()
-        st.session_state['dados_tabela'] = pd.DataFrame(json.loads(clean))
+        st.session_state['dados'] = pd.DataFrame(json.loads(clean))
+    except Exception as e:
+        st.error(f"Erro ao processar: {e}")
 
-with tab2:
-    st.write("Aponte o QR Code para a câmera:")
-    img_cam = camera_input_live()
-    if img_cam:
-        link = ler_qr_code(img_cam)
-        if link:
-            st.success("QR Code lido!")
-            st.link_button("🌐 Abrir no site da SEFAZ", link)
-            st.info("Em breve: Importação automática via link!")
-
-# --- 6. EXIBIÇÃO E SALVAMENTO ---
-if st.session_state['dados_tabela'] is not None:
+# --- 5. TABELA E SALVAMENTO ---
+if st.session_state['dados'] is not None:
     st.divider()
-    df_editado = st.data_editor(st.session_state['dados_tabela'], num_rows="dynamic")
+    df_editado = st.data_editor(st.session_state['dados'], num_rows="dynamic")
     
-    if st.button("☁️ Salvar na Planilha"):
+    if st.button("☁️ Salvar no Google Sheets"):
         sheet = conectar_gsheets()
         if sheet:
-            novos_dados = df_editado.values.tolist()
-            for linha in novos_dados:
+            for linha in df_editado.values.tolist():
+                # Adiciona a data de hoje na última coluna
+                linha.append(datetime.now().strftime('%d/%m/%Y'))
                 sheet.append_row(linha)
             st.balloons()
-            st.success("Salvo com sucesso!")
-            st.session_state['dados_tabela'] = None
+            st.success("Salvo!")
+            st.session_state['dados'] = None
 
-# --- 7. VISUALIZADOR DE ESTOQUE ---
+# --- 6. VISUALIZADOR ---
 st.divider()
-if st.button("📊 Ver Estoque Atualizado"):
+if st.button("📊 Ver Meu Estoque"):
     sheet = conectar_gsheets()
     if sheet:
-        dados = sheet.get_all_records()
-        if dados:
-            df_view = pd.DataFrame(dados)
-            # Adiciona link de busca de imagem
-            df_view['🖼️ Foto'] = df_view['produto'].apply(lambda x: f"https://www.google.com/search?q={x.replace(' ', '+')}&tbm=isch")
-            
-            st.dataframe(df_view, column_config={"🖼️ Foto": st.column_config.LinkColumn("Ver Foto")})
-            st.metric("Total Investido", f"R$ {df_view['preco'].sum():.2f}")
+        df_view = pd.DataFrame(sheet.get_all_records())
+        st.dataframe(df_view)
+        st.metric("Total", f"R$ {df_view['preco'].sum():.2f}")
