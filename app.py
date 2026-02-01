@@ -8,16 +8,16 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
-# --- 1. CONFIGURAÇÕES ---
+# --- 1. CONFIGURAÇÕES INICIAIS ---
 load_dotenv()
 api_key = os.getenv("GOOGLE_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
 
 if not api_key:
-    st.error("Chave API não configurada.")
+    st.error("ERRO: Chave API não encontrada. Verifique os Secrets.")
     st.stop()
 
 genai.configure(api_key=api_key)
-st.set_page_config(page_title="Dispensa Pro", page_icon="🛒")
+st.set_page_config(page_title="Minha Dispensa Pro", page_icon="🛒", layout="wide")
 
 # --- 2. CONEXÃO GOOGLE SHEETS ---
 def conectar_gsheets():
@@ -28,64 +28,87 @@ def conectar_gsheets():
             return gspread.authorize(creds).open("Estoque Dispensa").sheet1
         return None
     except Exception as e:
-        st.error(f"Erro na planilha: {e}")
+        st.error(f"Erro ao conectar na planilha: {e}")
         return None
 
-# --- 3. LÓGICA DA IA ---
-def processar_cupom(image_buffer):
+# --- 3. FUNÇÃO PROCESSAR COM IA (FOTO OU QR CODE) ---
+def processar_com_gemini(image_buffer, modo="foto"):
     model = genai.GenerativeModel('gemini-1.5-flash')
-    prompt = """Analise o cupom fiscal e extraia: produto, quantidade, categoria, preco. 
-    Retorne apenas JSON PURO: [{"produto": "X", "quantidade": 1, "categoria": "Alimentação", "preco": 5.50}]"""
     
+    if modo == "foto":
+        prompt = "Analise este cupom e extraia: produto, quantidade, categoria, preco. Retorne JSON PURO: [{'produto': 'X', 'quantidade': 1, 'categoria': 'Limpeza', 'preco': 5.50}]"
+    else:
+        prompt = "Extraia o link (URL) contido neste QR Code de Cupom Fiscal. Retorne apenas o link."
+
     image_parts = [{"mime_type": "image/jpeg", "data": image_buffer.getvalue()}]
     response = model.generate_content([prompt, image_parts[0]])
     return response.text
 
-# --- 4. INTERFACE ---
-st.title("🛒 Minha Dispensa Pro")
+# --- 4. INTERFACE PRINCIPAL ---
+st.title("🛒 Minha Dispensa Inteligente")
 
-if 'dados' not in st.session_state:
-    st.session_state['dados'] = None
+if 'dados_temp' not in st.session_state:
+    st.session_state['dados_temp'] = None
 
-# Opções de entrada simples
-metodo = st.radio("Como deseja adicionar?", ["Foto do Cupom", "Câmera ao Vivo"])
+tab_add, tab_relatorio = st.tabs(["➕ Adicionar Itens", "📊 Relatório de Gastos"])
 
-foto_para_processar = None
-
-if metodo == "Foto do Cupom":
-    foto_para_processar = st.file_uploader("Escolha a foto", type=['jpg', 'png', 'jpeg'])
-else:
-    foto_para_processar = st.camera_input("Tire a foto do cupom")
-
-if foto_para_processar and st.button("✨ Ler Cupom"):
-    try:
-        res = processar_cupom(foto_para_processar)
-        clean = res.replace("```json", "").replace("```", "").strip()
-        st.session_state['dados'] = pd.DataFrame(json.loads(clean))
-    except Exception as e:
-        st.error(f"Erro ao processar: {e}")
-
-# --- 5. TABELA E SALVAMENTO ---
-if st.session_state['dados'] is not None:
-    st.divider()
-    df_editado = st.data_editor(st.session_state['dados'], num_rows="dynamic")
+with tab_add:
+    col1, col2 = st.columns(2)
     
-    if st.button("☁️ Salvar no Google Sheets"):
+    with col1:
+        st.subheader("📸 Via Cupom")
+        foto = st.camera_input("Tirar foto do cupom", key="camera_foto")
+        if foto and st.button("✨ Processar Cupom"):
+            res = processar_com_gemini(foto, "foto")
+            clean = res.replace("```json", "").replace("```", "").strip()
+            st.session_state['dados_temp'] = pd.DataFrame(json.loads(clean))
+
+    with col2:
+        st.subheader("🔍 Via QR Code")
+        qr_foto = st.camera_input("Fotografar QR Code", key="camera_qr")
+        if qr_foto and st.button("🔗 Ler Link SEFAZ"):
+            link = processar_com_gemini(qr_foto, "qr")
+            st.success("Link Extraído!")
+            st.link_button("🌐 Abrir no site da SEFAZ", link.strip())
+
+    # Tabela de Edição e Salvamento
+    if st.session_state['dados_temp'] is not None:
+        st.divider()
+        st.write("### ✅ Confira e Edite os dados:")
+        df_editado = st.data_editor(st.session_state['dados_temp'], num_rows="dynamic")
+        
+        if st.button("☁️ Confirmar e Salvar na Planilha"):
+            sheet = conectar_gsheets()
+            if sheet:
+                data_hoje = datetime.now().strftime('%d/%m/%Y')
+                for linha in df_editado.values.tolist():
+                    linha.append(data_hoje)
+                    sheet.append_row(linha)
+                st.balloons()
+                st.success("Dados salvos com sucesso!")
+                st.session_state['dados_temp'] = None
+
+with tab_relatorio:
+    st.subheader("📈 Resumo Mensal")
+    if st.button("🔄 Atualizar Relatório"):
         sheet = conectar_gsheets()
         if sheet:
-            for linha in df_editado.values.tolist():
-                # Adiciona a data de hoje na última coluna
-                linha.append(datetime.now().strftime('%d/%m/%Y'))
-                sheet.append_row(linha)
-            st.balloons()
-            st.success("Salvo!")
-            st.session_state['dados'] = None
-
-# --- 6. VISUALIZADOR ---
-st.divider()
-if st.button("📊 Ver Meu Estoque"):
-    sheet = conectar_gsheets()
-    if sheet:
-        df_view = pd.DataFrame(sheet.get_all_records())
-        st.dataframe(df_view)
-        st.metric("Total", f"R$ {df_view['preco'].sum():.2f}")
+            dados_planilha = sheet.get_all_records()
+            if dados_planilha:
+                df = pd.DataFrame(dados_planilha)
+                
+                # Métricas Rápidas
+                total = df['preco'].sum()
+                st.metric("Gasto Total Acumulado", f"R$ {total:.2f}")
+                
+                # Gráfico por Categoria
+                st.write("### Gastos por Categoria")
+                gastos_cat = df.groupby('categoria')['preco'].sum().sort_values(ascending=False)
+                st.bar_chart(gastos_cat)
+                
+                # Tabela Detalhada com busca de fotos
+                st.write("### Itens no Estoque")
+                df['🖼️'] = df['produto'].apply(lambda x: f"https://www.google.com/search?q={x.replace(' ', '+')}&tbm=isch")
+                st.dataframe(df, column_config={"🖼️": st.column_config.LinkColumn("Foto")})
+            else:
+                st.warning("Nenhum dado encontrado na planilha.")
