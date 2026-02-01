@@ -7,163 +7,113 @@ import json
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
+import cv2
+import numpy as np
+from streamlit_camera_input_live import camera_input_live
 
-# --- 1. CONFIGURAÇÕES INICIAIS ---
-# --- 1. CONFIGURAÇÕES INICIAIS ---
-# --- 1. CONFIGURAÇÕES INICIAIS ---
-load_dotenv() # Tenta carregar localmente
-
-# 1º tenta pegar do sistema (PC)
+# --- 1. CONFIGURAÇÕES E CHAVES ---
+load_dotenv()
 api_key = os.getenv("GOOGLE_API_KEY")
 
-# 2º Se estiver vazio, tenta pegar dos Secrets (Nuvem)
 if not api_key and "GOOGLE_API_KEY" in st.secrets:
     api_key = st.secrets["GOOGLE_API_KEY"]
 
 if not api_key:
-    st.error("Chave API não encontrada. Verifique os Secrets no painel do Streamlit.")
+    st.error("ERRO: Chave API não configurada.")
     st.stop()
 
 genai.configure(api_key=api_key)
 
-# Configuração da página do app
-st.set_page_config(page_title="Minha Dispensa Cloud", page_icon="☁️", layout="centered")
+st.set_page_config(page_title="Dispensa Pro", page_icon="🛒", layout="centered")
 
-# --- 2. FUNÇÃO PARA CONECTAR NO GOOGLE SHEETS (HÍBRIDA) ---
+# --- 2. CONEXÃO GOOGLE SHEETS ---
 def conectar_gsheets():
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     try:
-        # TENTATIVA 1: Conexão via Streamlit Cloud (Segredos)
-        # Se estiver rodando na nuvem, ele busca no st.secrets
         if "gcp_service_account" in st.secrets:
-            creds_dict = st.secrets["gcp_service_account"]
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        
-        # TENTATIVA 2: Conexão Local (Arquivo físico)
-        # Se não achar na nuvem, busca o arquivo na pasta
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
         else:
             creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-            
-        client = gspread.authorize(creds)
-        sheet = client.open("Estoque Dispensa").sheet1
-        return sheet
         
+        client = gspread.authorize(creds)
+        return client.open("Estoque Dispensa").sheet1
     except Exception as e:
-        st.error(f"Erro na conexão com Planilha: {e}")
+        st.error(f"Erro de conexão: {e}")
         return None
 
-# --- 3. FUNÇÃO DA IA (GEMINI) ---
-def processar_cupom(image_file):
-    # Modelo rápido e estável
-    modelo_nome = 'gemini-flash-latest' 
-    
-    try:
-        model = genai.GenerativeModel(modelo_nome)
-        
-        # Prepara a imagem
-        bytes_data = image_file.getvalue()
-        image_parts = [{"mime_type": image_file.type, "data": bytes_data}]
+# --- 3. LOGICA DA IA ---
+def processar_ia(image_file):
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    prompt = f"""
+    Analise o cupom fiscal. Extraia itens: produto, quantidade, categoria, preco.
+    Data hoje: {datetime.now().strftime('%d/%m/%Y')}
+    Retorne JSON PURO (lista):
+    [{{"produto": "Exemplo", "quantidade": 1, "categoria": "Alimentação", "preco": 5.50, "data": "DD/MM/AAAA"}}]
+    """
+    image_parts = [{"mime_type": image_file.type, "data": image_file.getvalue()}]
+    response = model.generate_content([prompt, image_parts[0]])
+    return response.text
 
-        # O comando detalhado para garantir o JSON
-        prompt = f"""
-        Você é um sistema de OCR para supermercado. Analise esta imagem.
-        Extraia APENAS os itens comprados.
-        Data de hoje: {datetime.now().strftime('%d/%m/%Y')} (Use esta se não achar data no cupom).
-        
-        Retorne estritamente um JSON neste formato de lista:
-        [
-            {{"produto": "Nome do Item", "quantidade": 1, "categoria": "Alimentação", "preco": 10.50, "data": "DD/MM/AAAA"}}
-        ]
-        
-        Regras:
-        1. Ignore troco, impostos e endereço.
-        2. Categorias permitidas: Alimentação, Limpeza, Higiene, Bebidas, Outros.
-        3. NÃO use crases (```json). Apenas o texto cru.
-        """
+# --- 4. LOGICA QR CODE ---
+def ler_qr_code(image_buffer):
+    if image_buffer:
+        bytes_data = image_buffer.getvalue()
+        cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+        detector = cv2.QRCodeDetector()
+        url, _, _ = detector.detectAndDecode(cv2_img)
+        return url
+    return None
 
-        with st.spinner('A Inteligência Artificial está lendo o cupom...'):
-            response = model.generate_content([prompt, image_parts[0]])
-            return response.text
+# --- 5. INTERFACE ---
+st.title("🛒 Controle de Dispensa Inteligente")
 
-    except Exception as e:
-        return f"Erro: {e}"
-
-# --- 4. INTERFACE DO USUÁRIO ---
-st.title("☁️ Minha Dispensa na Nuvem")
-st.write("Escaneie o cupom e envie direto para o Google Sheets.")
-
-# Inicializa a memória para os dados não sumirem ao clicar nos botões
 if 'dados_tabela' not in st.session_state:
     st.session_state['dados_tabela'] = None
 
-uploaded_file = st.file_uploader("Tire uma foto do cupom fiscal", type=["jpg", "jpeg", "png"])
+tab1, tab2 = st.tabs(["📸 Foto (IA)", "🔍 QR Code (SEFAZ)"])
 
-# --- LÓGICA DE PROCESSAMENTO ---
-if uploaded_file is not None:
-    st.image(uploaded_file, caption="Imagem do Cupom", width=200)
-    
-    if st.button("🔍 Ler Cupom com IA"):
-        resultado_texto = processar_cupom(uploaded_file)
-        
-        # Tenta limpar o texto caso a IA tenha colocado formatação extra
-        resultado_limpo = resultado_texto.replace("```json", "").replace("```", "").strip()
-        
-        try:
-            dados = json.loads(resultado_limpo)
-            # Salva na memória
-            st.session_state['dados_tabela'] = pd.DataFrame(dados)
-        except json.JSONDecodeError:
-            st.error("A IA leu o cupom mas não conseguiu estruturar os dados.")
-            with st.expander("Ver o que a IA tentou responder (Debug)"):
-                st.text(resultado_texto)
+with tab1:
+    arq = st.file_uploader("Subir foto do cupom", type=['jpg', 'png', 'jpeg'])
+    if arq and st.button("✨ Analisar com IA"):
+        res = processar_ia(arq)
+        clean = res.replace("```json", "").replace("```", "").strip()
+        st.session_state['dados_tabela'] = pd.DataFrame(json.loads(clean))
 
-# --- ÁREA DE CONFIRMAÇÃO E ENVIO ---
+with tab2:
+    st.write("Aponte o QR Code para a câmera:")
+    img_cam = camera_input_live()
+    if img_cam:
+        link = ler_qr_code(img_cam)
+        if link:
+            st.success("QR Code lido!")
+            st.link_button("🌐 Abrir no site da SEFAZ", link)
+            st.info("Em breve: Importação automática via link!")
+
+# --- 6. EXIBIÇÃO E SALVAMENTO ---
 if st.session_state['dados_tabela'] is not None:
     st.divider()
-    st.success("✅ Leitura realizada! Confira os dados abaixo:")
+    df_editado = st.data_editor(st.session_state['dados_tabela'], num_rows="dynamic")
     
-    # Tabela editável (permite corrigir erros da IA antes de enviar)
-    df_editado = st.data_editor(
-        st.session_state['dados_tabela'], 
-        num_rows="dynamic", 
-        key="editor_google_sheets"
-    )
-    
-    st.write("") # Espaço visual
-    
-    # Botão de Enviar para a Nuvem
-    if st.button("☁️ Enviar para Google Sheets"):
+    if st.button("☁️ Salvar na Planilha"):
         sheet = conectar_gsheets()
-        
         if sheet:
-            try:
-                # Prepara os dados
-                novas_linhas = df_editado.values.tolist()
-                
-                # Se a planilha estiver vazia, adiciona o cabeçalho
-                if not sheet.get_all_values():
-                    cabecalho = df_editado.columns.tolist()
-                    sheet.append_row(cabecalho)
-                
-                # Adiciona cada produto como uma nova linha
-                with st.spinner("Salvando na nuvem..."):
-                    for linha in novas_linhas:
-                        sheet.append_row(linha)
-                
-                st.balloons()
-                st.success("Sucesso! Estoque atualizado na nuvem.")
-                st.link_button("📊 Ver Meu Estoque Online", "https://docs.google.com/spreadsheets/d/1hfq1LDxiOblaT7Z0zMf0u8fhtYDoEjuLxrS8yNoTjV0/edit?usp=sharing")
-                
-                # Limpa a memória para o próximo cupom
-                st.session_state['dados_tabela'] = None
-                # st.rerun() # Opcional: Recarrega a página para limpar tudo
-                
-            except Exception as e:
+            novos_dados = df_editado.values.tolist()
+            for linha in novos_dados:
+                sheet.append_row(linha)
+            st.balloons()
+            st.success("Salvo com sucesso!")
+            st.session_state['dados_tabela'] = None
 
-                st.error(f"Erro ao gravar na planilha: {e}")
-
-
+# --- 7. VISUALIZADOR DE ESTOQUE ---
+st.divider()
+if st.button("📊 Ver Estoque Atualizado"):
+    sheet = conectar_gsheets()
+    if sheet:
+        dados = sheet.get_all_records()
+        if dados:
+            df_view = pd.DataFrame(dados)
+            # Adiciona link de busca de imagem
+            df_view['🖼️ Foto'] = df_view['produto'].apply(lambda x: f"https://www.google.com/search?q={x.replace(' ', '+')}&tbm=isch")
+            
+            st.dataframe(df_view, column_config={"🖼️ Foto": st.column_config.LinkColumn("Ver Foto")})
+            st.metric("Total Investido", f"R$ {df_view['preco'].sum():.2f}")
