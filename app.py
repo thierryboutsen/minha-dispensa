@@ -156,7 +156,7 @@ if st.session_state['dados_tabela'] is not None:
                 
                 st.balloons()
                 st.success("Sucesso! Estoque atualizado na nuvem.")
-                st.link_button("Abrir Planilha Agora", "[https://docs.google.com/spreadsheets](https://docs.google.com/spreadsheets)")
+                st.link_button("📊 Ver Meu Estoque Online", "https://docs.google.com/spreadsheets/d/1hfq1LDxiOblaT7Z0zMf0u8fhtYDoEjuLxrS8yNoTjV0/edit?usp=sharing")
                 
                 # Limpa a memória para o próximo cupom
                 st.session_state['dados_tabela'] = None
@@ -165,4 +165,5 @@ if st.session_state['dados_tabela'] is not None:
             except Exception as e:
 
                 st.error(f"Erro ao gravar na planilha: {e}")
+
 
